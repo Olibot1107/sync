@@ -25,30 +25,24 @@ When the server starts it ensures each share folder exists, opens a `chokidar` w
 
 ## Running a client
 ```bash
-npm run client -- --share projects --local ~/my-projects
+npm run client
 ```
 Default arguments are pulled from `client/settings.js` and can be overridden with either CLI flags or environment variables:
 
 | Flag | Env var | Description |
 |------|---------|-------------|
-| `--server` | `SYNC_SERVER_URL` | WebSocket URL to connect to (default `ws://localhost:3001`). |
-| `--share` | `SYNC_SHARE` | Share name you want to mirror (default `projects`). |
-| `--local` | `SYNC_LOCAL_DIR` | Local directory for the mirror (default `./client-sync`). |
 | `--log-level` | `LOG_LEVEL` | Client-specific verbosity (`debug`, `info`, `warn`, `error`). Defaults to `info`. |
+| `--choose-local` | | Prompt for the local folder path interactively before syncing. |
+
+If you want to override the server URL, share name, or default mirror path without editing `client/config.json`, set `SYNC_SERVER_URL`, `SYNC_SHARE`, or `SYNC_LOCAL_DIR` in your environment before running `npm run client`.
+
+You can add a `sharePaths` map inside `client/config.json` so each share uses its own default mirror location. For example, `"sharePaths": {"projects": "./client-projects", "photos": "~/shared-photos"}` lets the client pick the correct folder automatically when you run `npm run client -- --share projects`.
+
+Both `server/config.json` and `client/config.json` are now auto-generated with sensible defaults when they don’t exist yet, so running `npm run server` or `npm run client` the first time will create those files for you automatically.
+
+You can put a `client/config.json` next to `client/index.js` (see the sample file) to persist sensible defaults there; the client will automatically merge that JSON with any flags or environment variables you pass.
 
 A newly connected client requests a full snapshot (`share-list` + `snapshot`), clears the local mirror, copies everything over, and then starts its own watcher. After that, it streams every local change to the server, and the server replays those edits back into the share so every peer receives the update.
-
-### Sequential processing
-- Both the server and client now run every filesystem operation through a tiny serial queue (`lib/serialQueue.js`). Each queued job completes before the next one starts, so when you move files “one by one,” the events arrive over the network in the same order you performed them and the console logs reflect that serialized flow.  
-- Watcher events, remote changes, and shared-folder writes emit `info`-level log lines before the next queue entry executes, which keeps the console output easy to follow and prevents operations from racing.
-
-### Lazy downloads
-- The client mirror only stores directories and metadata (`localDir/.sync/metadata.json`) on connect; file contents are downloaded on demand so you don't consume disk space for untouched files.  
-- Use `npm run client-fetch -- --path docs/readme.md --share projects --local ~/my-projects` (or `npm run client-prefetch` for folders) to queue one or more download requests. Each script writes a small JSON request into `.sync/prefetch/`; the running client picks it up, downloads the file contents via the WebSocket, writes them to the mirror, and marks the metadata entry as `downloaded: true` while suppressing the watcher so it never re-uploads what just arrived.
-
-### Prefetch directories on demand
-- Run `npm run client-prefetch -- --path docs/src --share projects --local ~/my-projects` (or point your file manager/editor at that script) whenever you open a folder; the script writes a JSON request into `.sync/prefetch/`, the client picks it up, and every file under that directory is downloaded sequentially before the next request runs.  
-- The client keeps track of each directory’s files in `localDir/.sync/metadata.json`, so only the needed files are fetched and your watcher waits until the download finishes before emitting updates.
 
 ## Logging & error handling
 - Timestamps and log levels are colorized using ANSI escape codes so you can scan the console quickly. File/edit activity messages are logged at `info` level (`share filesystem change`, `local filesystem change detected`, `remote change applied locally`, etc.), and `debug` adds more detail for suppressed events or republished changes.

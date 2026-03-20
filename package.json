@@ -5,9 +5,7 @@
   "main": "server/index.js",
   "scripts": {
     "server": "node server/index.js",
-    "client": "node client/index.js",
-    "client-fetch": "node client/fetch.js",
-    "client-prefetch": "node client/prefetch.js"
+    "client": "node client/index.js"
   },
   "dependencies": {
     "chokidar": "^3.5.3",

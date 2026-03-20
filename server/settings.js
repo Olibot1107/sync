@@ -1,6 +1,26 @@
 const fs = require('fs');
 const path = require('path');
 
+function ensureConfigFile() {
+  const configPath = path.resolve(__dirname, 'config.json');
+  if (fs.existsSync(configPath)) {
+    return;
+  }
+  const baseDir = path.resolve(__dirname, 'shared');
+  fs.ensureDirSync(baseDir);
+  const template = {
+    port: 3001,
+    logLevel: 'info',
+    shares: [
+      {
+        name: 'projects',
+        path: './shared/projects'
+      }
+    ]
+  };
+  fs.writeFileSync(configPath, JSON.stringify(template, null, 2));
+}
+
 function readConfig() {
   const configPath = path.resolve(__dirname, 'config.json');
   if (!fs.existsSync(configPath)) {
@@ -40,6 +60,7 @@ function normalizeShare(share) {
 }
 
 function loadSettings() {
+  ensureConfigFile();
   const config = readConfig();
   const envShares = parseEnvShares();
   const shares = (envShares || config.shares || []).map(normalizeShare);

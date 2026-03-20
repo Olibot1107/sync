@@ -14,12 +14,29 @@ function readConfig() {
   }
 }
 
+function ensureConfigFile() {
+  const configPath = path.resolve(__dirname, 'config.json');
+  if (fs.existsSync(configPath)) return;
+  const defaultConfig = {
+    server: 'ws://localhost:3001',
+    share: 'projects',
+    local: './client-sync',
+    logLevel: 'info',
+    sharePaths: {
+      projects: './client-sync'
+    }
+  };
+  fs.writeFileSync(configPath, JSON.stringify(defaultConfig, null, 2));
+}
+
+ensureConfigFile();
 const fileConfig = readConfig();
 
 const resolved = {
-  server: fileConfig.server || 'ws://localhost:3001',
+  server: fileConfig.server || 'ws://localhost:3130',
   share: fileConfig.share || 'projects',
   local: fileConfig.local || './client-sync',
+  sharePaths: fileConfig.sharePaths || {},
   logLevel: (fileConfig.logLevel || 'info').toLowerCase()
 };
 

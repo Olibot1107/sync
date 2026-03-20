@@ -2,334 +2,146 @@ const WebSocket = require('ws');
 const chokidar = require('chokidar');
 const fs = require('fs-extra');
 const path = require('path');
+const readline = require('readline');
 const yargs = require('yargs/yargs');
 
 const settings = require('./settings');
 const createLogger = require('../lib/logger');
-const createSerialQueue = require('../lib/serialQueue');
-const createMetadataStore = require('./metadata');
 
 const argv = yargs(process.argv.slice(2))
-  .option('server', {
-    type: 'string',
-    describe: 'WebSocket server URL',
-    default: settings.server
-  })
-  .option('share', {
-    type: 'string',
-    describe: 'Share name that the client wants to sync',
-    default: settings.share
-  })
-  .option('local', {
-    type: 'string',
-    describe: 'Local folder where shared files will be mirrored',
-    default: settings.local
-  })
-  .option('log-level', {
-    type: 'string',
-    choices: ['debug', 'info', 'warn', 'error'],
-    describe: 'Logging verbosity',
-    default: settings.logLevel
+  .option('log-level', { type: 'string', choices: ['debug', 'info', 'warn', 'error'], default: settings.logLevel })
+  .option('choose-local', {
+    type: 'boolean',
+    describe: 'Prompt for the local mirror location before syncing',
+    default: false
   })
   .help(false)
   .parse();
 
-const serverUrl = argv.server;
-const shareName = argv.share;
-const localDir = path.resolve(process.cwd(), argv.local);
-const metadataStore = createMetadataStore(localDir);
-const metadataReady = metadataStore.init();
+const serverUrl = process.env.SYNC_SERVER_URL || settings.server;
+const shareName = process.env.SYNC_SHARE || settings.share;
+const envLocal = process.env.SYNC_LOCAL_DIR;
+function computeDefaultLocal(name) {
+  const override = settings.sharePaths?.[name];
+  const base = override || settings.local;
+  const candidate = envLocal || base;
+  return path.resolve(process.cwd(), candidate);
+}
+let localDir = computeDefaultLocal(shareName);
 const logger = createLogger('sync-client', { level: argv['log-level'] });
-const localQueue = createSerialQueue({
-  onError: (err) => logger.error('local queue error', err.message || err)
-});
-const remoteQueue = createSerialQueue({
-  onError: (err) => logger.error('remote queue error', err.message || err)
-});
-const prefetchQueue = createSerialQueue({
-  onError: (err) => logger.error('prefetch queue error', err.message || err)
-});
-const pendingContentFetches = new Map();
-let shareReadyResolve;
-let shareReady = false;
-const shareReadyPromise = new Promise((resolve) => {
-  shareReadyResolve = resolve;
-});
-let prefetchWatcherStarted = false;
 
 let localWatcher;
-const localSuppressed = new Map();
+const suppressed = new Map();
+let ws;
+let initSent = false;
 
 function normalizeRelPath(rel) {
   if (!rel) return '';
   return rel.split(path.sep).join('/');
 }
 
-function suppressLocalEvent(relPath) {
+function suppressEvent(relPath) {
   const key = relPath || '.';
-  const expires = Date.now() + 500;
-  localSuppressed.set(key, expires);
-  setTimeout(() => {
-    if (localSuppressed.get(key) === expires) {
-      localSuppressed.delete(key);
-    }
-  }, 600);
+  suppressed.set(key, Date.now());
+  setTimeout(() => suppressed.delete(key), 500);
 }
 
-function isLocalSuppressed(relPath) {
+function isSuppressed(relPath) {
   const key = relPath || '.';
-  return localSuppressed.has(key);
+  return suppressed.has(key);
+}
+
+function askQuestion(promptText, defaultValue) {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const prompt = defaultValue ? `${promptText} [${defaultValue}]: ` : `${promptText}: `;
+  return new Promise((resolve) => {
+    rl.question(prompt, (answer) => {
+      rl.close();
+      resolve(answer);
+    });
+  });
+}
+
+async function chooseLocalDir() {
+  if (!argv['choose-local']) return;
+  const answer = await askQuestion('Local folder to mirror the share', path.resolve(process.cwd(), argv.local));
+  if (answer.trim()) {
+    localDir = path.resolve(process.cwd(), answer.trim());
+  }
 }
 
 function startLocalWatcher() {
   if (localWatcher) {
     localWatcher.close();
-    localWatcher = null;
   }
-
-  const options = {
-    persistent: true,
-    ignoreInitial: true,
-    awaitWriteFinish: {
-      stabilityThreshold: 100,
-      pollInterval: 50
-    },
-    ignored: (p) => p.startsWith(metadataStore.metadataDir)
-  };
-
+  const options = { persistent: true, ignoreInitial: true };
   localWatcher = chokidar.watch(localDir, options);
   const forward = (action, absolute, includeContent) => {
-    localQueue.push(() => handleLocalChange(action, absolute, includeContent));
+    handleLocalChange(action, absolute, includeContent).catch((err) => {
+      logger.error('fwd local change failed', err.message);
+    });
   };
-
   localWatcher.on('add', (p) => forward('update', p, true));
   localWatcher.on('change', (p) => forward('update', p, true));
   localWatcher.on('unlink', (p) => forward('delete', p, false));
   localWatcher.on('addDir', (p) => forward('ensureDir', p, false));
   localWatcher.on('unlinkDir', (p) => forward('delete', p, false));
-  localWatcher.on('ready', () => logger.info('local watcher ready', { path: localDir }));
-  localWatcher.on('error', (err) => logger.error('local watcher error', err.message));
+  localWatcher.on('error', (err) => logger.error('watcher error', err.message));
 }
 
 async function handleLocalChange(action, absolutePath, includeContent) {
-  await metadataReady;
   const relPath = normalizeRelPath(path.relative(localDir, absolutePath));
   if (!relPath) return;
-  if (isLocalSuppressed(relPath)) {
-    logger.debug('suppressed local event', { action, path: relPath });
+  if (isSuppressed(relPath)) {
+    logger.debug('ignored suppressed local event', { path: relPath, action });
     return;
   }
-  logger.info('local filesystem change detected', { action, path: relPath });
+  logger.info('local filesystem change', { action, path: relPath });
   if (action === 'update' && includeContent) {
     const data = await fs.readFile(absolutePath);
     sendFileChange({ action, path: relPath, encoding: 'base64', content: data.toString('base64') });
-    const stats = await fs.stat(absolutePath);
-    await metadataStore.upsert({
-      path: relPath,
-      size: stats.size,
-      mtimeMs: stats.mtimeMs,
-      downloaded: true,
-      lastFetched: Date.now()
-    });
   } else {
     sendFileChange({ action, path: relPath });
-    if (action === 'delete') {
-      await metadataStore.remove(relPath);
-    }
   }
-}
-
-function ensureDirSuppressed(relPath) {
-  if (!relPath || relPath === '.') return;
-  suppressLocalEvent(relPath);
-  const parent = path.dirname(relPath);
-  if (parent && parent !== relPath) {
-    suppressLocalEvent(parent);
-  }
-}
-
-async function fetchFileContent(relPath) {
-  await shareReadyPromise;
-  const pending = pendingContentFetches.get(relPath);
-  if (pending) {
-    return pending.promise;
-  }
-
-  let resolveFn;
-  let rejectFn;
-  const promise = new Promise((resolve, reject) => {
-    resolveFn = resolve;
-    rejectFn = reject;
-  });
-
-  pendingContentFetches.set(relPath, {
-    resolve: resolveFn,
-    reject: rejectFn,
-    promise
-  });
-
-  try {
-    ws.send(JSON.stringify({ type: 'request-file', share: shareName, path: relPath }));
-  } catch (err) {
-    pendingContentFetches.delete(relPath);
-    rejectFn(err);
-  }
-
-  return promise;
-}
-
-async function prefetchDirectory(dirPath) {
-  const normalizedDir = normalizeRelPath(dirPath || '');
-  await metadataReady;
-  const allEntries = metadataStore.list();
-  const prefix = normalizedDir ? `${normalizedDir}/` : '';
-  const candidates = allEntries.filter((entry) => {
-    if (!normalizedDir) return true;
-    return entry.path === normalizedDir || entry.path.startsWith(prefix);
-  });
-
-  for (const entry of candidates) {
-    if (entry.downloaded) continue;
-    await fetchFileContent(entry.path);
-  }
-}
-
-async function handlePrefetchCommand(filePath) {
-  try {
-    const raw = await fs.readFile(filePath, 'utf-8');
-    await fs.remove(filePath);
-    const payload = JSON.parse(raw);
-    await prefetchDirectory(payload.path || '');
-  } catch (err) {
-    logger.error('failed to handle prefetch request', err.message);
-  }
-}
-
-async function setupPrefetchWatcher() {
-  if (prefetchWatcherStarted) return;
-  prefetchWatcherStarted = true;
-  await metadataReady;
-  await fs.ensureDir(metadataStore.prefetchDir);
-  const watcher = chokidar.watch(metadataStore.prefetchDir, { ignoreInitial: true, depth: 0 });
-  watcher.on('add', (filePath) => {
-    prefetchQueue.push(() => handlePrefetchCommand(filePath));
-  });
 }
 
 function sendFileChange(change) {
   if (ws.readyState !== WebSocket.OPEN) {
-    logger.warn('ws not open yet, skipping local change', { change });
+    logger.warn('WS not open to send local change', change);
     return;
   }
-  logger.debug('sending file change', change);
-  ws.send(JSON.stringify({
-    type: 'file-change',
-    share: shareName,
-    ...change
-  }));
+  ws.send(JSON.stringify({ type: 'file-change', share: shareName, ...change }));
 }
 
 async function applySnapshot(snapshot) {
-  await metadataReady;
   await fs.ensureDir(localDir);
-
+  await fs.emptyDir(localDir);
   for (const dir of snapshot.directories || []) {
-    const absolute = path.join(localDir, dir);
-    await fs.ensureDir(absolute);
+    await fs.ensureDir(path.join(localDir, dir));
   }
-
-  const entries = (snapshot.files || []).map((file) => ({
-    path: file.path,
-    size: file.size || 0,
-    mtimeMs: file.mtimeMs || Date.now(),
-    downloaded: false,
-    lastFetched: null
-  }));
-  await metadataStore.overwrite(entries);
-
-  logger.info('snapshot applied', {
-    directories: (snapshot.directories || []).length,
-    files: entries.length,
-    localDir
-  });
+  for (const file of snapshot.files || []) {
+    const target = path.join(localDir, file.path);
+    await fs.ensureDir(path.dirname(target));
+    await fs.writeFile(target, Buffer.from(file.content, file.encoding || 'base64'));
+    suppressEvent(file.path);
+  }
+  logger.info('snapshot applied', { files: (snapshot.files || []).length, dirs: (snapshot.directories || []).length });
   startLocalWatcher();
-  await setupPrefetchWatcher();
-  if (!shareReady && shareReadyResolve) {
-    shareReady = true;
-    shareReadyResolve();
-  }
-}
-
-async function removeLocalFile(relPath) {
-  const targetPath = path.join(localDir, relPath);
-  suppressLocalEvent(relPath);
-  if (await fs.pathExists(targetPath)) {
-    await fs.remove(targetPath);
-  }
 }
 
 async function applyRemoteChange(change) {
-  await metadataReady;
-  const metadata = {
-    path: change.path,
-    size: change.metadata?.size || 0,
-    mtimeMs: change.metadata?.mtimeMs || Date.now(),
-    downloaded: false,
-    lastFetched: null
-  };
-
+  const targetPath = path.join(localDir, change.path);
   if (change.action === 'ensureDir') {
-    await fs.ensureDir(path.join(localDir, change.path));
-    await metadataStore.upsert(metadata);
+    await fs.ensureDir(targetPath);
   } else if (change.action === 'update') {
-    await metadataStore.upsert(metadata);
-    await removeLocalFile(change.path);
+    await fs.ensureDir(path.dirname(targetPath));
+    await fs.writeFile(targetPath, Buffer.from(change.content || '', change.encoding || 'base64'));
   } else if (change.action === 'delete') {
-    await metadataStore.remove(change.path);
-    await removeLocalFile(change.path);
+    await fs.remove(targetPath);
   }
-
-  logger.debug('applied remote change', change);
-  logger.info('remote change applied locally', {
-    action: change.action,
-    path: change.path
-  });
+  suppressEvent(change.path);
+  logger.info('remote change applied', { action: change.action, path: change.path });
 }
-
-async function handleFileContent(msg) {
-  if (msg.share !== shareName) return;
-  await metadataReady;
-  const targetPath = path.join(localDir, msg.path);
-  ensureDirSuppressed(path.dirname(msg.path));
-  await fs.ensureDir(path.dirname(targetPath));
-  suppressLocalEvent(msg.path);
-  await fs.writeFile(targetPath, Buffer.from(msg.content || '', msg.encoding || 'base64'));
-  await metadataStore.markFetched(msg.path, {
-    size: msg.metadata?.size || 0,
-    mtimeMs: msg.metadata?.mtimeMs || Date.now()
-  });
-  const pending = pendingContentFetches.get(msg.path);
-  if (pending) {
-    pending.resolve();
-    pendingContentFetches.delete(msg.path);
-  }
-  logger.info('file content fetched', { path: msg.path });
-}
-
-const ws = new WebSocket(serverUrl);
-let initSent = false;
-
-logger.info('client configured', { server: serverUrl, share: shareName, localDir, logLevel: argv['log-level'] });
-
-ws.on('open', () => {
-  logger.info('connected to sync server', { server: serverUrl });
-});
-
-ws.on('message', (data) => {
-  handleMessage(data).catch((err) => {
-    logger.error('message handler failed', err.message);
-  });
-});
 
 async function handleMessage(data) {
   let msg;
@@ -339,9 +151,8 @@ async function handleMessage(data) {
     logger.warn('invalid server message', err.message);
     return;
   }
-
   if (msg.type === 'share-list') {
-    const available = (msg.shares || []).map((share) => share.name).join(', ');
+    const available = (msg.shares || []).map((s) => s.name).join(', ');
     logger.info('server shares', { available });
     if (!initSent) {
       ws.send(JSON.stringify({ type: 'init', share: shareName }));
@@ -349,40 +160,42 @@ async function handleMessage(data) {
     }
     return;
   }
-
   if (msg.type === 'snapshot') {
     logger.info('received snapshot', { share: msg.share });
     await applySnapshot(msg.snapshot || {});
     return;
   }
-
-  if (msg.type === 'file-content') {
-    await handleFileContent(msg);
-    return;
-  }
-
   if (msg.type === 'file-change') {
-    remoteQueue.push(() => applyRemoteChange(msg));
+    await applyRemoteChange(msg);
     return;
   }
-
   if (msg.type === 'error') {
     logger.warn('server error', msg.message);
   }
 }
 
-ws.on('close', () => {
-  logger.info('server connection closed');
+async function startClient() {
+  await chooseLocalDir();
+  logger.info('client configured', { server: serverUrl, share: shareName, localDir });
+  ws = new WebSocket(serverUrl);
+  ws.on('open', () => {
+    logger.info('connected to sync server', { server: serverUrl });
+  });
+  ws.on('message', (data) => {
+    handleMessage(data).catch((err) => logger.error('message handler failed', err.message));
+  });
+  ws.on('close', () => {
+    logger.info('server connection closed');
+  });
+  ws.on('error', (err) => {
+    logger.error('connection error', err.message);
+  });
+}
+
+startClient().catch((err) => {
+  logger.error('failed to start client', err.message);
+  process.exit(1);
 });
 
-ws.on('error', (err) => {
-  logger.error('connection error', err.message);
-});
-
-process.on('uncaughtException', (err) => {
-  logger.error('uncaught exception', err.stack || err.message);
-});
-
-process.on('unhandledRejection', (reason) => {
-  logger.error('unhandled rejection', reason);
-});
+process.on('uncaughtException', (err) => logger.error('uncaught exception', err.stack || err.message));
+process.on('unhandledRejection', (reason) => logger.error('unhandled rejection', reason));
