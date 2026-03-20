@@ -1,9 +1,0 @@
-{
-  "port": 3130,
-  "shares": [
-    {
-      "name": "projects",
-      "path": "./shared/projects"
-    }
-  ]
-}

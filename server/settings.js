@@ -9,7 +9,7 @@ function ensureConfigFile() {
   const baseDir = path.resolve(__dirname, 'shared');
   fs.ensureDirSync(baseDir);
   const template = {
-    port: 3001,
+    port: 3130,
     logLevel: 'info',
     shares: [
       {
