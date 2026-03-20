@@ -139,11 +139,18 @@ function scheduleReconnect() {
   }, settings.reconnectDelayMs);
 }
 
+function requestInit() {
+  if (!ws || ws.readyState !== WebSocket.OPEN || initSent) return;
+  ws.send(JSON.stringify({ type: 'init', share: shareName }));
+  initSent = true;
+}
+
 function connectWebSocket() {
   initSent = false;
   ws = new WebSocket(serverUrl);
   ws.on('open', () => {
     logger.info('connected to sync server', { server: serverUrl });
+    requestInit();
   });
   ws.on('message', (data) => {
     handleMessage(data).catch((err) => logger.error('message handler failed', err.message));
@@ -198,10 +205,7 @@ async function handleMessage(data) {
   if (msg.type === 'share-list') {
     const available = (msg.shares || []).map((s) => s.name).join(', ');
     logger.info('server shares', { available });
-    if (!initSent) {
-      ws.send(JSON.stringify({ type: 'init', share: shareName }));
-      initSent = true;
-    }
+    requestInit();
     return;
   }
   if (msg.type === 'snapshot') {
