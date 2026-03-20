@@ -161,6 +161,7 @@ function connectWebSocket() {
   });
   ws.on('error', (err) => {
     logger.error('connection error', err.message);
+    scheduleReconnect();
   });
 }
 
