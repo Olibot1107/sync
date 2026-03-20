@@ -130,7 +130,7 @@ function registerWatchers() {
   }
 }
 
-const wss = new WebSocket.Server({ port });
+const wss = new WebSocket.Server({ host: '0.0.0.0', port });
 
 wss.on('listening', () => {
   logger.info('sync server listening', { port });
