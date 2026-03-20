@@ -2,6 +2,7 @@ const WebSocket = require('ws');
 const chokidar = require('chokidar');
 const fs = require('fs-extra');
 const path = require('path');
+const os = require('os');
 const readline = require('readline');
 const yargs = require('yargs/yargs');
 
@@ -21,11 +22,25 @@ const argv = yargs(process.argv.slice(2))
 const serverUrl = process.env.SYNC_SERVER_URL || settings.server;
 const shareName = process.env.SYNC_SHARE || settings.share;
 const envLocal = process.env.SYNC_LOCAL_DIR;
+
+function expandTilde(value) {
+  if (!value) return value;
+  if (value === '~') return os.homedir();
+  const prefix = `~${path.sep}`;
+  if (value.startsWith(prefix)) {
+    return path.join(os.homedir(), value.slice(prefix.length));
+  }
+  if (value.startsWith('~/')) {
+    return path.join(os.homedir(), value.slice(2));
+  }
+  return value;
+}
+
 function computeDefaultLocal(name) {
   const override = settings.sharePaths?.[name];
   const base = override || settings.local;
-  const candidate = envLocal || base;
-  return path.resolve(process.cwd(), candidate);
+  const candidate = expandTilde(envLocal || base);
+  return path.resolve(process.cwd(), candidate || '');
 }
 let localDir = computeDefaultLocal(shareName);
 const logger = createLogger('sync-client', { level: argv['log-level'] });
