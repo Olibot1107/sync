@@ -34,6 +34,8 @@ let localWatcher;
 const suppressed = new Map();
 let ws;
 let initSent = false;
+let reconnectTimeout;
+let shuttingDown = false;
 
 function normalizeRelPath(rel) {
   if (!rel) return '';
@@ -64,7 +66,7 @@ function askQuestion(promptText, defaultValue) {
 
 async function chooseLocalDir() {
   if (!argv['choose-local']) return;
-  const answer = await askQuestion('Local folder to mirror the share', path.resolve(process.cwd(), argv.local));
+  const answer = await askQuestion('Local folder to mirror the share', localDir);
   if (answer.trim()) {
     localDir = path.resolve(process.cwd(), answer.trim());
   }
@@ -111,6 +113,33 @@ function sendFileChange(change) {
     return;
   }
   ws.send(JSON.stringify({ type: 'file-change', share: shareName, ...change }));
+}
+
+function scheduleReconnect() {
+  if (shuttingDown) return;
+  if (reconnectTimeout) clearTimeout(reconnectTimeout);
+  reconnectTimeout = setTimeout(() => {
+    logger.info('reconnecting to sync server', { delay: settings.reconnectDelayMs });
+    connectWebSocket();
+  }, settings.reconnectDelayMs);
+}
+
+function connectWebSocket() {
+  initSent = false;
+  ws = new WebSocket(serverUrl);
+  ws.on('open', () => {
+    logger.info('connected to sync server', { server: serverUrl });
+  });
+  ws.on('message', (data) => {
+    handleMessage(data).catch((err) => logger.error('message handler failed', err.message));
+  });
+  ws.on('close', () => {
+    logger.warn('server connection closed, will reconnect shortly');
+    scheduleReconnect();
+  });
+  ws.on('error', (err) => {
+    logger.error('connection error', err.message);
+  });
 }
 
 async function applySnapshot(snapshot) {
@@ -177,19 +206,7 @@ async function handleMessage(data) {
 async function startClient() {
   await chooseLocalDir();
   logger.info('client configured', { server: serverUrl, share: shareName, localDir });
-  ws = new WebSocket(serverUrl);
-  ws.on('open', () => {
-    logger.info('connected to sync server', { server: serverUrl });
-  });
-  ws.on('message', (data) => {
-    handleMessage(data).catch((err) => logger.error('message handler failed', err.message));
-  });
-  ws.on('close', () => {
-    logger.info('server connection closed');
-  });
-  ws.on('error', (err) => {
-    logger.error('connection error', err.message);
-  });
+  connectWebSocket();
 }
 
 startClient().catch((err) => {

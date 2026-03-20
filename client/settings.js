@@ -18,7 +18,7 @@ function ensureConfigFile() {
   const configPath = path.resolve(__dirname, 'config.json');
   if (fs.existsSync(configPath)) return;
   const defaultConfig = {
-    server: 'ws://localhost:3001',
+    server: 'ws://localhost:3130',
     share: 'projects',
     local: './client-sync',
     logLevel: 'info',
@@ -37,7 +37,8 @@ const resolved = {
   share: fileConfig.share || 'projects',
   local: fileConfig.local || './client-sync',
   sharePaths: fileConfig.sharePaths || {},
-  logLevel: (fileConfig.logLevel || 'info').toLowerCase()
+  logLevel: (fileConfig.logLevel || 'info').toLowerCase(),
+  reconnectDelayMs: Number(fileConfig.reconnectDelayMs || 5000)
 };
 
 module.exports = resolved;

@@ -34,9 +34,13 @@ Default arguments are pulled from `client/settings.js` and can be overridden wit
 | `--log-level` | `LOG_LEVEL` | Client-specific verbosity (`debug`, `info`, `warn`, `error`). Defaults to `info`. |
 | `--choose-local` | | Prompt for the local folder path interactively before syncing. |
 
+Set `SYNC_SERVER_URL`, `SYNC_SHARE`, or `SYNC_LOCAL_DIR` in your environment to temporarily override the values stored in `client/config.json`.
+
 If you want to override the server URL, share name, or default mirror path without editing `client/config.json`, set `SYNC_SERVER_URL`, `SYNC_SHARE`, or `SYNC_LOCAL_DIR` in your environment before running `npm run client`.
 
 You can add a `sharePaths` map inside `client/config.json` so each share uses its own default mirror location. For example, `"sharePaths": {"projects": "./client-projects", "photos": "~/shared-photos"}` lets the client pick the correct folder automatically when you run `npm run client -- --share projects`.
+
+Add the `reconnectDelayMs` property (milliseconds) to control how long the client waits before reconnecting when the WebSocket closes; the default is `5000`.
 
 Both `server/config.json` and `client/config.json` are now auto-generated with sensible defaults when they don’t exist yet, so running `npm run server` or `npm run client` the first time will create those files for you automatically.
 
