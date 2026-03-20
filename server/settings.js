@@ -1,4 +1,5 @@
 const fs = require('fs-extra');
+const os = require('os');
 const path = require('path');
 
 function ensureConfigFile() {
@@ -47,11 +48,20 @@ function parseEnvShares() {
   }
 }
 
+function expandHome(rawPath) {
+  if (typeof rawPath !== 'string' || !rawPath) return rawPath;
+  if (rawPath === '~') return os.homedir();
+  if (rawPath.startsWith('~/') || rawPath.startsWith('~\\')) {
+    return path.join(os.homedir(), rawPath.slice(2));
+  }
+  return rawPath;
+}
+
 function normalizeShare(share) {
   if (!share || !share.name || !share.path) {
     throw new Error('Share definitions require a name and path');
   }
-  const rawPath = share.path;
+  const rawPath = expandHome(share.path);
   const resolved = path.isAbsolute(rawPath) ? rawPath : path.resolve(__dirname, rawPath);
   return {
     name: share.name,
