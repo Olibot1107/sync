@@ -37,6 +37,7 @@ const resolved = {
   share: fileConfig.share || 'projects',
   local: fileConfig.local || './client-sync',
   sharePaths: fileConfig.sharePaths || {},
+  ignoredPaths: fileConfig.ignoredPaths || ['.git'],
   logLevel: (fileConfig.logLevel || 'info').toLowerCase(),
   reconnectDelayMs: Number(fileConfig.reconnectDelayMs || 5000)
 };

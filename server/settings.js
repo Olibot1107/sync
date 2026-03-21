@@ -57,15 +57,33 @@ function expandHome(rawPath) {
   return rawPath;
 }
 
+function tidyIgnorePaths(rawPaths) {
+  if (!Array.isArray(rawPaths)) {
+    return [];
+  }
+  return rawPaths
+    .map((value) => {
+      if (typeof value !== 'string') return '';
+      const trimmed = value.trim();
+      if (!trimmed) return '';
+      return trimmed.split(path.sep).join('/').replace(/^\/+/, '');
+    })
+    .filter(Boolean);
+}
+
 function normalizeShare(share) {
   if (!share || !share.name || !share.path) {
     throw new Error('Share definitions require a name and path');
   }
   const rawPath = expandHome(share.path);
   const resolved = path.isAbsolute(rawPath) ? rawPath : path.resolve(__dirname, rawPath);
+  const userIgnored = share.hasOwnProperty('ignoredPaths') ? share.ignoredPaths : share.ignore;
+  const normalizedIgnored = tidyIgnorePaths(userIgnored);
+  const ignoredPaths = userIgnored ? normalizedIgnored : normalizedIgnored.length ? normalizedIgnored : ['.git'];
   return {
     name: share.name,
-    path: resolved
+    path: resolved,
+    ignoredPaths
   };
 }
 

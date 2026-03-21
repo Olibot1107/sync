@@ -57,8 +57,26 @@ function normalizeRelPath(rel) {
   return rel.split(path.sep).join('/');
 }
 
+const localIgnoredPatterns = (settings.ignoredPaths || [])
+  .map((pattern) => normalizeRelPath(pattern))
+  .filter(Boolean);
+
+function matchesIgnorePattern(rel, pattern) {
+  if (!rel || !pattern) return false;
+  if (rel === pattern) return true;
+  return rel.startsWith(`${pattern}/`);
+}
+
+function isLocalIgnoredPath(rel) {
+  return localIgnoredPatterns.some((pattern) => matchesIgnorePattern(rel, pattern));
+}
+
 function isConflictPath(rel) {
   return rel === '.conflicts' || rel.startsWith('.conflicts/');
+}
+
+function shouldSkipLocalRel(rel) {
+  return isConflictPath(rel) || isLocalIgnoredPath(rel);
 }
 
 function suppressEvent(relPath) {
@@ -95,7 +113,14 @@ function startLocalWatcher() {
   if (localWatcher) {
     localWatcher.close();
   }
-  const options = { persistent: true, ignoreInitial: true };
+  const options = {
+    persistent: true,
+    ignoreInitial: true,
+    ignored: (p) => {
+      const rel = normalizeRelPath(path.relative(localDir, p));
+      return rel && shouldSkipLocalRel(rel);
+    }
+  };
   localWatcher = chokidar.watch(localDir, options);
   const forward = (action, absolute, includeContent) => {
     handleLocalChange(action, absolute, includeContent).catch((err) => {
@@ -115,6 +140,10 @@ async function handleLocalChange(action, absolutePath, includeContent) {
   if (!relPath) return;
   if (isSuppressed(relPath)) {
     logger.debug('ignored suppressed local event', { path: relPath, action });
+    return;
+  }
+  if (shouldSkipLocalRel(relPath)) {
+    logger.debug('ignored local change for skipped path', { path: relPath, action });
     return;
   }
   logger.info('local filesystem change', { action, path: relPath });
@@ -198,7 +227,7 @@ async function collectLocalFiles() {
     for (const item of items) {
       const absolute = path.join(current, item);
       const rel = normalizeRelPath(path.relative(localDir, absolute));
-      if (isConflictPath(rel)) continue;
+      if (shouldSkipLocalRel(rel)) continue;
       const stats = await fs.stat(absolute);
       if (stats.isDirectory()) {
         await walk(absolute);
@@ -243,7 +272,9 @@ async function preserveLocalConflicts(remoteMap) {
 async function clearLocalMirror() {
   const entries = await fs.readdir(localDir);
   for (const entry of entries) {
-    if (entry === '.conflicts') continue;
+    const relEntry = normalizeRelPath(entry);
+    if (!relEntry) continue;
+    if (shouldSkipLocalRel(relEntry)) continue;
     await fs.remove(path.join(localDir, entry));
   }
 }

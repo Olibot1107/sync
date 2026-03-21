@@ -18,13 +18,29 @@ function normalizeRelPath(rel) {
   return rel.split(path.sep).join('/');
 }
 
+function matchesIgnorePattern(rel, pattern) {
+  if (!rel || !pattern) return false;
+  if (rel === pattern) return true;
+  return rel.startsWith(`${pattern}/`);
+}
+
+function isIgnoredRelPath(rel, share) {
+  if (!rel) return false;
+  const rules = share.ignoredPaths || [];
+  return rules.some((pattern) => matchesIgnorePattern(rel, pattern));
+}
+
 function isTrashRelPath(rel) {
   return rel === TRASH_DIR_NAME || rel.startsWith(`${TRASH_DIR_NAME}/`);
 }
 
+function shouldIgnoreShareRel(share, rel) {
+  return !!rel && (isTrashRelPath(rel) || isIgnoredRelPath(rel, share));
+}
+
 function shouldIgnoreSharePath(share, absolutePath) {
   const rel = normalizeRelPath(path.relative(share.path, absolutePath));
-  return rel && isTrashRelPath(rel);
+  return shouldIgnoreShareRel(share, rel);
 }
 
 async function moveToTrash(share, relPath) {
@@ -76,7 +92,7 @@ async function collectSnapshot(share) {
     for (const entry of entries) {
       const absolute = path.join(current, entry);
       const rel = normalizeRelPath(path.relative(share.path, absolute));
-      if (rel && isTrashRelPath(rel)) continue;
+      if (shouldIgnoreShareRel(share, rel)) continue;
       let stats;
       try {
         stats = await fs.stat(absolute);
@@ -125,7 +141,7 @@ async function sendSnapshot(ws, share) {
 function handleFsEvent(share, absolutePath, action, includeContent) {
   const relPath = normalizeRelPath(path.relative(share.path, absolutePath));
   if (!relPath) return;
-  if (isTrashRelPath(relPath)) return;
+  if (shouldIgnoreShareRel(share, relPath)) return;
   if (isSuppressed(share.name, relPath)) return;
 
   const msg = {
@@ -203,6 +219,7 @@ wss.on('connection', (ws) => {
         safeSend(ws, JSON.stringify({ type: 'error', message: 'Unknown share for change' }));
         return;
       }
+      if (shouldIgnoreShareRel(share, payload.path)) return;
       const targetPath = path.join(share.path, payload.path);
       try {
         if (payload.action === 'ensureDir') {
