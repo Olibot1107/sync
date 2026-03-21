@@ -75,14 +75,26 @@ async function collectSnapshot(share) {
     const entries = await fs.readdir(current);
     for (const entry of entries) {
       const absolute = path.join(current, entry);
-      const stats = await fs.stat(absolute);
       const rel = normalizeRelPath(path.relative(share.path, absolute));
       if (rel && isTrashRelPath(rel)) continue;
+      let stats;
+      try {
+        stats = await fs.stat(absolute);
+      } catch (err) {
+        logger.warn('snapshot entry skipped (stat)', { path: rel, err: err.message });
+        continue;
+      }
       if (stats.isDirectory()) {
         directories.push(rel);
         await walk(absolute);
       } else if (stats.isFile()) {
-        const content = await fs.readFile(absolute);
+        let content;
+        try {
+          content = await fs.readFile(absolute);
+        } catch (err) {
+          logger.warn('snapshot file skipped (read)', { path: rel, err: err.message });
+          continue;
+        }
         files.push({
           path: rel,
           encoding: 'base64',
