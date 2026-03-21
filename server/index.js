@@ -10,6 +10,8 @@ const createLogger = require('../lib/logger');
 const logger = createLogger('sync-server', { level: settings.logLevel });
 const port = settings.port;
 const shares = settings.shares;
+const snapshotCompressionEnabled = Boolean(settings.snapshotCompression);
+const snapshotConcurrencyLimit = Math.min(Math.max(settings.snapshotConcurrency || 4, 1), 32);
 const snapshotCompressionEnabled = settings.snapshotCompression;
 
 const suppressedEvents = new Map();
@@ -105,44 +107,60 @@ async function collectSnapshotMetadata(share) {
 }
 
 async function streamSnapshotFiles(ws, share, files) {
+  const total = files.length;
+  if (!total) return 0;
   let sent = 0;
-  for (const fileMeta of files) {
-    const absolute = path.join(share.path, fileMeta.path);
-    let content;
-    try {
-      content = await fs.readFile(absolute);
-    } catch (err) {
-      logger.warn('snapshot file skipped (read)', { path: fileMeta.path, err: err.message });
-      continue;
-    }
-    let payloadBuffer = content;
-    let compressed = false;
-    if (snapshotCompressionEnabled) {
+  let nextIndex = 0;
+
+  async function worker() {
+    while (true) {
+      const index = nextIndex++;
+      if (index >= total) break;
+      const fileMeta = files[index];
+      const absolute = path.join(share.path, fileMeta.path);
+      let content;
       try {
-        payloadBuffer = zlib.deflateSync(content);
-        compressed = true;
+        content = await fs.readFile(absolute);
       } catch (err) {
-        logger.warn('snapshot file compression failed', { path: fileMeta.path, err: err.message });
-        payloadBuffer = content;
-        compressed = false;
+        logger.warn('snapshot file skipped (read)', { path: fileMeta.path, err: err.message });
+        continue;
       }
+      let payloadBuffer = content;
+      let compressed = false;
+      if (snapshotCompressionEnabled) {
+        try {
+          payloadBuffer = zlib.deflateSync(content);
+          compressed = true;
+        } catch (err) {
+          logger.warn('snapshot file compression failed', { path: fileMeta.path, err: err.message });
+          payloadBuffer = content;
+          compressed = false;
+        }
+      }
+      const payload = {
+        type: 'snapshot-file',
+        share: share.name,
+        file: {
+          path: fileMeta.path,
+          encoding: 'base64',
+          content: payloadBuffer.toString('base64'),
+          compressed,
+          compression: compressed ? 'deflate' : undefined
+        },
+        index: index + 1,
+        total
+      };
+      safeSend(ws, JSON.stringify(payload));
+      sent += 1;
     }
-    const payload = {
-      type: 'snapshot-file',
-      share: share.name,
-      file: {
-        path: fileMeta.path,
-        encoding: 'base64',
-        content: payloadBuffer.toString('base64'),
-        compressed,
-        compression: compressed ? 'deflate' : undefined
-      },
-      index: sent + 1,
-      total: files.length
-    };
-    safeSend(ws, JSON.stringify(payload));
-    sent += 1;
   }
+
+  const concurrency = Math.min(snapshotConcurrencyLimit, total);
+  const workers = [];
+  for (let i = 0; i < concurrency; i += 1) {
+    workers.push(worker());
+  }
+  await Promise.all(workers);
   return sent;
 }
 

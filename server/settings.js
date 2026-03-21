@@ -19,6 +19,7 @@ function ensureConfigFile() {
       }
     ],
     snapshotCompression: true,
+    snapshotConcurrency: 4,
     password: 'changeme'
   };
   fs.writeFileSync(configPath, JSON.stringify(template, null, 2));
@@ -102,8 +103,13 @@ function loadSettings() {
   const logLevel = (process.env.LOG_LEVEL || config.logLevel || 'info').toLowerCase();
   const password = process.env.SYNC_PASSWORD || config.password || 'changeme';
   const snapshotCompression = config.hasOwnProperty('snapshotCompression') ? Boolean(config.snapshotCompression) : true;
+  const snapshotConcurrencyRaw = process.env.SYNC_SNAPSHOT_CONCURRENCY || config.snapshotConcurrency;
+  let snapshotConcurrency = Number(snapshotConcurrencyRaw);
+  if (!Number.isFinite(snapshotConcurrency) || snapshotConcurrency < 1) {
+    snapshotConcurrency = 4;
+  }
 
-  return { port, logLevel, shares, password, snapshotCompression };
+  return { port, logLevel, shares, password, snapshotCompression, snapshotConcurrency };
 }
 
 module.exports = loadSettings();
