@@ -68,7 +68,7 @@ function sendToShareClients(msg, { exclude } = {}) {
   }
 }
 
-async function collectSnapshot(share) {
+async function collectSnapshotMetadata(share) {
   const directories = [];
   const files = [];
 
@@ -89,17 +89,10 @@ async function collectSnapshot(share) {
         directories.push(rel);
         await walk(absolute);
       } else if (stats.isFile()) {
-        let content;
-        try {
-          content = await fs.readFile(absolute);
-        } catch (err) {
-          logger.warn('snapshot file skipped (read)', { path: rel, err: err.message });
-          continue;
-        }
         files.push({
           path: rel,
-          encoding: 'base64',
-          content: content.toString('base64')
+          size: stats.size,
+          mtimeMs: stats.mtimeMs
         });
       }
     }
@@ -109,18 +102,65 @@ async function collectSnapshot(share) {
   return { directories, files };
 }
 
+async function streamSnapshotFiles(ws, share, files) {
+  let sent = 0;
+  for (const fileMeta of files) {
+    const absolute = path.join(share.path, fileMeta.path);
+    let content;
+    try {
+      content = await fs.readFile(absolute);
+    } catch (err) {
+      logger.warn('snapshot file skipped (read)', { path: fileMeta.path, err: err.message });
+      continue;
+    }
+    const payload = {
+      type: 'snapshot-file',
+      share: share.name,
+      file: {
+        path: fileMeta.path,
+        encoding: 'base64',
+        content: content.toString('base64')
+      },
+      index: sent + 1,
+      total: files.length
+    };
+    safeSend(ws, JSON.stringify(payload));
+    sent += 1;
+  }
+  return sent;
+}
+
 async function sendSnapshot(ws, share) {
   try {
-    const snapshot = await collectSnapshot(share);
-    safeSend(ws, JSON.stringify({
-      type: 'snapshot',
+    const snapshot = await collectSnapshotMetadata(share);
+    safeSend(ws, JSON.stringify({ type: 'snapshot', share: share.name, snapshot }));
+    logger.info('snapshot metadata sent', {
       share: share.name,
-      snapshot
-    }));
-    logger.info('sent snapshot', { share: share.name, files: snapshot.files.length });
+      files: snapshot.files.length,
+      directories: snapshot.directories.length
+    });
+    if (ws.pendingSnapshot) {
+      logger.warn('overwriting existing pending snapshot', {
+        previous: ws.pendingSnapshot.shareName,
+        share: share.name
+      });
+    }
+    ws.pendingSnapshot = { shareName: share.name, share, files: snapshot.files };
   } catch (err) {
     logger.error('failed to send snapshot', { share: share.name, err: err.message });
   }
+}
+
+async function processPendingSnapshot(ws, shareName) {
+  const pending = ws.pendingSnapshot;
+  if (!pending || pending.shareName !== shareName) {
+    logger.warn('snapshot ready ignored', { share: shareName });
+    return;
+  }
+  const filesSent = await streamSnapshotFiles(ws, pending.share, pending.files);
+  safeSend(ws, JSON.stringify({ type: 'snapshot-complete', share: shareName, files: filesSent }));
+  logger.info('snapshot complete', { share: shareName, files: filesSent });
+  ws.pendingSnapshot = null;
 }
 
 function handleFsEvent(share, absolutePath, action, includeContent) {
@@ -176,6 +216,7 @@ wss.on('listening', () => {
 
 wss.on('connection', (ws) => {
   logger.info('client connected');
+  ws.pendingSnapshot = null;
   ws.send(JSON.stringify({ type: 'share-list', shares: shares.map((s) => ({ name: s.name })) }));
 
   ws.on('message', async (data) => {
@@ -200,6 +241,11 @@ wss.on('connection', (ws) => {
       }
       ws.shareName = share.name;
       await sendSnapshot(ws, share);
+      return;
+    }
+
+    if (payload.type === 'snapshot-ready') {
+      await processPendingSnapshot(ws, payload.share || ws.shareName);
       return;
     }
 
@@ -233,6 +279,7 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     logger.info('client disconnected');
+    ws.pendingSnapshot = null;
   });
 });
 

@@ -53,6 +53,7 @@ let ws;
 let initSent = false;
 let reconnectTimeout;
 let shuttingDown = false;
+let snapshotContext = null;
 
 function normalizeRelPath(rel) {
   if (!rel) return '';
@@ -137,6 +138,13 @@ function startLocalWatcher() {
   localWatcher.on('error', (err) => logger.error('watcher error', err.message));
 }
 
+function stopLocalWatcher() {
+  if (localWatcher) {
+    localWatcher.close();
+    localWatcher = null;
+  }
+}
+
 async function handleLocalChange(action, absolutePath, includeContent) {
   const relPath = normalizeRelPath(path.relative(localDir, absolutePath));
   if (!relPath) return;
@@ -200,43 +208,92 @@ function connectWebSocket() {
   });
 }
 
-async function applySnapshot(snapshot) {
+async function handleSnapshotMetadata(snapshot) {
+  stopLocalWatcher();
+  snapshotContext = null;
   await fs.ensureDir(localDir);
-  const remoteFiles = (snapshot.files || []).map((file) => ({
-    path: file.path,
-    buffer: Buffer.from(file.content || '', file.encoding || 'base64')
-  }));
-  const remoteMap = new Map(remoteFiles.map((file) => [file.path, file.buffer]));
-  await preserveLocalConflicts(remoteMap);
+  const directories = (snapshot.directories || []).filter(Boolean);
+  const filesMeta = snapshot.files || [];
+  const remoteMetaMap = new Map(filesMeta.map((file) => [file.path, file]));
+  await preserveLocalConflicts(remoteMetaMap);
   await clearLocalMirror();
-  for (const dir of snapshot.directories || []) {
+  for (const dir of directories) {
     await fs.ensureDir(path.join(localDir, dir));
   }
-  const totalFiles = remoteFiles.length;
-  let lastPercent = -1;
-  let lastFolder = '';
-  for (let idx = 0; idx < remoteFiles.length; idx += 1) {
-    const file = remoteFiles[idx];
-    const target = path.join(localDir, file.path);
+  snapshotContext = {
+    totalFiles: filesMeta.length,
+    processedFiles: 0,
+    dirCount: directories.length,
+    lastPercent: -1,
+    lastFolder: '',
+    completeReceived: false
+  };
+  sendSnapshotReady();
+}
+
+function sendSnapshotReady() {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'snapshot-ready', share: shareName }));
+}
+
+async function handleSnapshotFileMessage(msg) {
+  const context = snapshotContext;
+  if (!context) {
+    logger.warn('snapshot file received without an active snapshot', { path: msg?.file?.path });
+    return;
+  }
+  const file = msg.file;
+  if (!file || !file.path) {
+    logger.warn('snapshot file message missing payload', { share: msg.share });
+    return;
+  }
+  const target = path.join(localDir, file.path);
+  try {
     await fs.ensureDir(path.dirname(target));
-    await fs.writeFile(target, file.buffer);
-    suppressEvent(file.path);
-    if (totalFiles >= SNAPSHOT_PROGRESS_THRESHOLD) {
-      const percent = Math.floor(((idx + 1) / totalFiles) * 100);
-      const folder = file.path.split('/')[0] || '.';
-      if (percent !== lastPercent || folder !== lastFolder) {
-        logger.info('snapshot progress', {
-          share: shareName,
-          folder,
-          percent,
-          path: file.path
-        });
-        lastPercent = percent;
-        lastFolder = folder;
-      }
+    await fs.writeFile(target, Buffer.from(file.content || '', file.encoding || 'base64'));
+  } catch (err) {
+    logger.warn('failed to write snapshot file', err.message);
+    return;
+  }
+  suppressEvent(file.path);
+  context.processedFiles += 1;
+  if (context.totalFiles > 0 && context.totalFiles >= SNAPSHOT_PROGRESS_THRESHOLD) {
+    const percent = Math.floor((context.processedFiles / context.totalFiles) * 100);
+    const folder = file.path.split('/')[0] || '.';
+    if (percent !== context.lastPercent || folder !== context.lastFolder) {
+      logger.info('snapshot progress', {
+        share: shareName,
+        folder,
+        percent,
+        path: file.path
+      });
+      context.lastPercent = percent;
+      context.lastFolder = folder;
     }
   }
-  logger.info('snapshot applied', { files: (snapshot.files || []).length, dirs: (snapshot.directories || []).length });
+  await maybeFinalizeSnapshot();
+}
+
+function handleSnapshotComplete(msg) {
+  const context = snapshotContext;
+  if (!context) {
+    logger.warn('snapshot complete received without an active snapshot', { share: msg.share });
+    return;
+  }
+  if (typeof msg.files === 'number') {
+    context.totalFiles = msg.files;
+  }
+  context.completeReceived = true;
+  maybeFinalizeSnapshot();
+}
+
+async function maybeFinalizeSnapshot() {
+  const context = snapshotContext;
+  if (!context) return;
+  if (!context.completeReceived) return;
+  if (context.processedFiles !== context.totalFiles) return;
+  logger.info('snapshot applied', { files: context.processedFiles, dirs: context.dirCount });
+  snapshotContext = null;
   startLocalWatcher();
 }
 
@@ -252,7 +309,7 @@ async function collectLocalFiles() {
       if (stats.isDirectory()) {
         await walk(absolute);
       } else if (stats.isFile()) {
-        entries.push({ absolute, rel });
+        entries.push({ absolute, rel, stats });
       }
     }
   }
@@ -260,18 +317,19 @@ async function collectLocalFiles() {
   return entries;
 }
 
-async function preserveLocalConflicts(remoteMap) {
+async function preserveLocalConflicts(remoteMetaMap) {
   const localFiles = await collectLocalFiles();
   if (!localFiles.length) return;
   const conflicts = [];
   for (const file of localFiles) {
-    const remoteBuffer = remoteMap.get(file.rel);
-    if (!remoteBuffer) {
+    const remoteMeta = remoteMetaMap?.get(file.rel);
+    if (!remoteMeta) {
       conflicts.push(file);
       continue;
     }
-    const localBuffer = await fs.readFile(file.absolute);
-    if (!localBuffer.equals(remoteBuffer)) {
+    const sizeMatches = file.stats.size === remoteMeta.size;
+    const timeMatches = Math.abs(file.stats.mtimeMs - (remoteMeta.mtimeMs || 0)) < 1000;
+    if (!sizeMatches || !timeMatches) {
       conflicts.push(file);
     }
   }
@@ -328,8 +386,16 @@ async function handleMessage(data) {
     return;
   }
   if (msg.type === 'snapshot') {
-    logger.info('received snapshot', { share: msg.share });
-    await applySnapshot(msg.snapshot || {});
+    logger.info('received snapshot metadata', { share: msg.share });
+    await handleSnapshotMetadata(msg.snapshot || {});
+    return;
+  }
+  if (msg.type === 'snapshot-file') {
+    await handleSnapshotFileMessage(msg);
+    return;
+  }
+  if (msg.type === 'snapshot-complete') {
+    handleSnapshotComplete(msg);
     return;
   }
   if (msg.type === 'file-change') {
