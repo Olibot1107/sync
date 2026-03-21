@@ -38,6 +38,7 @@ const resolved = {
   local: fileConfig.local || './client-sync',
   sharePaths: fileConfig.sharePaths || {},
   ignoredPaths: fileConfig.ignoredPaths || ['.git'],
+  password: fileConfig.password || '',
   logLevel: (fileConfig.logLevel || 'info').toLowerCase(),
   reconnectDelayMs: Number(fileConfig.reconnectDelayMs || 5000)
 };

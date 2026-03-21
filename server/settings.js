@@ -17,7 +17,8 @@ function ensureConfigFile() {
         name: 'projects',
         path: './shared/projects'
       }
-    ]
+    ],
+    password: 'changeme'
   };
   fs.writeFileSync(configPath, JSON.stringify(template, null, 2));
 }
@@ -98,8 +99,9 @@ function loadSettings() {
 
   const port = Number(process.env.PORT || process.env.SYNC_PORT || config.port) || 3001;
   const logLevel = (process.env.LOG_LEVEL || config.logLevel || 'info').toLowerCase();
+  const password = process.env.SYNC_PASSWORD || config.password || 'changeme';
 
-  return { port, logLevel, shares };
+  return { port, logLevel, shares, password };
 }
 
 module.exports = loadSettings();

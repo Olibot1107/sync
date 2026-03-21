@@ -22,6 +22,7 @@ const argv = yargs(process.argv.slice(2))
 const serverUrl = process.env.SYNC_SERVER_URL || settings.server;
 const shareName = process.env.SYNC_SHARE || settings.share;
 const envLocal = process.env.SYNC_LOCAL_DIR;
+const clientPassword = process.env.SYNC_PASSWORD || settings.password || '';
 
 function expandTilde(value) {
   if (!value) return value;
@@ -174,7 +175,7 @@ function scheduleReconnect() {
 
 function requestInit() {
   if (!ws || ws.readyState !== WebSocket.OPEN || initSent) return;
-  ws.send(JSON.stringify({ type: 'init', share: shareName }));
+  ws.send(JSON.stringify({ type: 'init', share: shareName, password: clientPassword }));
   initSent = true;
 }
 

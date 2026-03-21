@@ -20,6 +20,7 @@ The WebSocket endpoint opens on the port defined in `server/config.json` (defaul
 | `PORT` / `SYNC_PORT` | overrides the port the WS server listens on. |
 | `LOG_LEVEL` | one of `debug`, `info`, `warn`, or `error` controls the colorized logging level. |
 | `SYNC_SHARES` | JSON array of share definitions (matching the shape from `config.json`) if you prefer to keep configuration outside the repository. |
+| `SYNC_PASSWORD` | overrides the password required for a client to sync. |
 
 When the server starts it ensures each share folder exists, opens a `chokidar` watcher, and broadcasts every filesystem event to every connected client (excluding the emitter). The share watcher suppresses the next automatic event that is triggered by an applied remote change, which keeps the loop from re-broadcasting its own updates.
 
@@ -33,10 +34,13 @@ Default arguments are pulled from `client/settings.js` and can be overridden wit
 |------|---------|-------------|
 | `--log-level` | `LOG_LEVEL` | Client-specific verbosity (`debug`, `info`, `warn`, `error`). Defaults to `info`. |
 | `--choose-local` | | Prompt for the local folder path interactively before syncing. |
+|  | `SYNC_PASSWORD` | Password presented to the server during initialization. |
 
 Set `SYNC_SERVER_URL`, `SYNC_SHARE`, or `SYNC_LOCAL_DIR` in your environment to temporarily override the values stored in `client/config.json`.
 
 If you want to override the server URL, share name, or default mirror path without editing `client/config.json`, set `SYNC_SERVER_URL`, `SYNC_SHARE`, or `SYNC_LOCAL_DIR` in your environment before running `npm run client`.
+
+The client also sends a password during initialization. You can persist it inside `client/config.json` using the `password` field or override it with `SYNC_PASSWORD` so it matches the server’s configured password.
 
 You can add a `sharePaths` map inside `client/config.json` so each share uses its own default mirror location. For example, `"sharePaths": {"projects": "./client-projects", "photos": "~/shared-photos"}` lets the client pick the correct folder automatically when you run `npm run client -- --share projects`.
 

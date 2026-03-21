@@ -188,6 +188,11 @@ wss.on('connection', (ws) => {
     }
 
     if (payload.type === 'init') {
+      if (!payload.password || payload.password !== settings.password) {
+        safeSend(ws, JSON.stringify({ type: 'error', message: 'Invalid password' }));
+        ws.close();
+        return;
+      }
       const share = shares.find((s) => s.name === payload.share);
       if (!share) {
         safeSend(ws, JSON.stringify({ type: 'error', message: 'Unknown share' }));
