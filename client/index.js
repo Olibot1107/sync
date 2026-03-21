@@ -57,6 +57,10 @@ function normalizeRelPath(rel) {
   return rel.split(path.sep).join('/');
 }
 
+function isConflictPath(rel) {
+  return rel === '.conflicts' || rel.startsWith('.conflicts/');
+}
+
 function suppressEvent(relPath) {
   const key = relPath || '.';
   suppressed.set(key, Date.now());
@@ -167,18 +171,81 @@ function connectWebSocket() {
 
 async function applySnapshot(snapshot) {
   await fs.ensureDir(localDir);
-  await fs.emptyDir(localDir);
+  const remoteFiles = (snapshot.files || []).map((file) => ({
+    path: file.path,
+    buffer: Buffer.from(file.content || '', file.encoding || 'base64')
+  }));
+  const remoteMap = new Map(remoteFiles.map((file) => [file.path, file.buffer]));
+  await preserveLocalConflicts(remoteMap);
+  await clearLocalMirror();
   for (const dir of snapshot.directories || []) {
     await fs.ensureDir(path.join(localDir, dir));
   }
-  for (const file of snapshot.files || []) {
+  for (const file of remoteFiles) {
     const target = path.join(localDir, file.path);
     await fs.ensureDir(path.dirname(target));
-    await fs.writeFile(target, Buffer.from(file.content, file.encoding || 'base64'));
+    await fs.writeFile(target, file.buffer);
     suppressEvent(file.path);
   }
   logger.info('snapshot applied', { files: (snapshot.files || []).length, dirs: (snapshot.directories || []).length });
   startLocalWatcher();
+}
+
+async function collectLocalFiles() {
+  const entries = [];
+  async function walk(current) {
+    const items = await fs.readdir(current);
+    for (const item of items) {
+      const absolute = path.join(current, item);
+      const rel = normalizeRelPath(path.relative(localDir, absolute));
+      if (isConflictPath(rel)) continue;
+      const stats = await fs.stat(absolute);
+      if (stats.isDirectory()) {
+        await walk(absolute);
+      } else if (stats.isFile()) {
+        entries.push({ absolute, rel });
+      }
+    }
+  }
+  await walk(localDir);
+  return entries;
+}
+
+async function preserveLocalConflicts(remoteMap) {
+  const localFiles = await collectLocalFiles();
+  if (!localFiles.length) return;
+  const conflicts = [];
+  for (const file of localFiles) {
+    const remoteBuffer = remoteMap.get(file.rel);
+    if (!remoteBuffer) {
+      conflicts.push(file);
+      continue;
+    }
+    const localBuffer = await fs.readFile(file.absolute);
+    if (!localBuffer.equals(remoteBuffer)) {
+      conflicts.push(file);
+    }
+  }
+  if (!conflicts.length) return;
+  const conflictRoot = path.join(localDir, '.conflicts', `${Date.now()}`);
+  await fs.ensureDir(conflictRoot);
+  for (const file of conflicts) {
+    const target = path.join(conflictRoot, file.rel);
+    await fs.ensureDir(path.dirname(target));
+    await fs.move(file.absolute, target, { overwrite: true });
+  }
+  logger.warn('local changes preserved in conflicts folder', {
+    count: conflicts.length,
+    location: path.relative(localDir, conflictRoot)
+  });
+}
+
+async function clearLocalMirror() {
+  const entries = await fs.readdir(localDir);
+  for (const entry of entries) {
+    if (entry === '.conflicts') continue;
+    await fs.remove(path.join(localDir, entry));
+  }
 }
 
 async function applyRemoteChange(change) {

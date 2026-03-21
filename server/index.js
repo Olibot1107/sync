@@ -9,12 +9,32 @@ const createLogger = require('../lib/logger');
 const logger = createLogger('sync-server', { level: settings.logLevel });
 const port = settings.port;
 const shares = settings.shares;
+const TRASH_DIR_NAME = '.trash';
 
 const suppressedEvents = new Map();
 
 function normalizeRelPath(rel) {
   if (!rel) return '';
   return rel.split(path.sep).join('/');
+}
+
+function isTrashRelPath(rel) {
+  return rel === TRASH_DIR_NAME || rel.startsWith(`${TRASH_DIR_NAME}/`);
+}
+
+function shouldIgnoreSharePath(share, absolutePath) {
+  const rel = normalizeRelPath(path.relative(share.path, absolutePath));
+  return rel && isTrashRelPath(rel);
+}
+
+async function moveToTrash(share, relPath) {
+  const source = path.join(share.path, relPath);
+  if (!(await fs.pathExists(source))) return null;
+  const bucket = path.join(share.path, TRASH_DIR_NAME, Date.now().toString());
+  const destination = path.join(bucket, relPath);
+  await fs.ensureDir(path.dirname(destination));
+  await fs.move(source, destination, { overwrite: true });
+  return destination;
 }
 
 function suppressEvent(shareName, relPath) {
@@ -57,6 +77,7 @@ async function collectSnapshot(share) {
       const absolute = path.join(current, entry);
       const stats = await fs.stat(absolute);
       const rel = normalizeRelPath(path.relative(share.path, absolute));
+      if (rel && isTrashRelPath(rel)) continue;
       if (stats.isDirectory()) {
         directories.push(rel);
         await walk(absolute);
@@ -92,6 +113,7 @@ async function sendSnapshot(ws, share) {
 function handleFsEvent(share, absolutePath, action, includeContent) {
   const relPath = normalizeRelPath(path.relative(share.path, absolutePath));
   if (!relPath) return;
+  if (isTrashRelPath(relPath)) return;
   if (isSuppressed(share.name, relPath)) return;
 
   const msg = {
@@ -116,11 +138,14 @@ function handleFsEvent(share, absolutePath, action, includeContent) {
 }
 
 function registerWatchers() {
-  const watchOptions = { persistent: true, ignoreInitial: true };
   for (const share of shares) {
     fs.ensureDirSync(share.path);
     logger.info('watching share', { name: share.name, path: share.path });
-    const watcher = chokidar.watch(share.path, watchOptions);
+    const watcher = chokidar.watch(share.path, {
+      persistent: true,
+      ignoreInitial: true,
+      ignored: (p) => shouldIgnoreSharePath(share, p)
+    });
     watcher.on('add', (p) => handleFsEvent(share, p, 'update', true));
     watcher.on('change', (p) => handleFsEvent(share, p, 'update', true));
     watcher.on('unlink', (p) => handleFsEvent(share, p, 'delete'));
@@ -175,7 +200,16 @@ wss.on('connection', (ws) => {
           const buffer = Buffer.from(payload.content || '', payload.encoding || 'base64');
           await fs.writeFile(targetPath, buffer);
         } else if (payload.action === 'delete') {
-          await fs.remove(targetPath);
+          const moved = await moveToTrash(share, payload.path);
+          if (!moved) {
+            await fs.remove(targetPath);
+          } else {
+            logger.info('moved deleted file to trash', {
+              share: share.name,
+              path: payload.path,
+              trashPath: normalizeRelPath(path.relative(share.path, moved))
+            });
+          }
         }
       } catch (err) {
         logger.error('failed to apply client change', err.message);
