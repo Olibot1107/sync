@@ -55,6 +55,7 @@ A newly connected client requests a full snapshot (`share-list` + `snapshot`), c
 - When a client deletes a file, the server moves it into `trash-bin/<timestamp>/…` inside the share root before informing the other peers. The mirror still receives the delete event, but the data is preserved until someone inspects or clears the trash folder manually.
 - The share watcher ignores `trash-bin`, so the trash bin is never re-broadcast or mirrored back to clients automatically. Delete something again inside `trash-bin` (or remove `trash-bin/<timestamp>` entirely) if you want to permanently drop it.
 - The server now notifies every client about newly moved trash entries. Each client mirrors that subset of `trash-bin` locally (under their mirror) so you can open your copy of `trash-bin` to inspect the deleted files even when the rest of the share stays clean.
+- Entries live for 4 days on both the server and each client; an hourly cleanup routine removes `trash-bin/<timestamp>` buckets older than that and tells all clients to drop their local copies so the space is reclaimed automatically.
 - Move-to-trash now skips files that disappear between the delete request and the rename (such as nested `.git` directories that already vanished or were inaccessible); those deletes still propagate to clients, but nothing is logged as a failure.
 
 ## Ignored paths

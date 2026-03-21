@@ -10,6 +10,8 @@ const logger = createLogger('sync-server', { level: settings.logLevel });
 const port = settings.port;
 const shares = settings.shares;
 const TRASH_DIR_NAME = 'trash-bin';
+const TRASH_RETENTION_MS = 4 * 24 * 60 * 60 * 1000;
+const TRASH_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 
 const suppressedEvents = new Map();
 
@@ -99,6 +101,57 @@ async function broadcastTrashEvent(share, originalRelPath, destination) {
     if (client.readyState !== WebSocket.OPEN) continue;
     if (client.shareName !== share.name) continue;
     safeSend(client, serialized);
+  }
+}
+
+function broadcastTrashCleanup(share, trashBucket) {
+  if (!trashBucket) return;
+  const payload = {
+    type: 'trash-cleanup',
+    share: share.name,
+    trashPath: normalizeRelPath(path.join(TRASH_DIR_NAME, trashBucket)),
+    timestamp: Date.now()
+  };
+  const serialized = JSON.stringify(payload);
+  for (const client of wss.clients) {
+    if (client.readyState !== WebSocket.OPEN) continue;
+    if (client.shareName !== share.name) continue;
+    safeSend(client, serialized);
+  }
+}
+
+async function cleanupTrash(share) {
+  const trashRoot = path.join(share.path, TRASH_DIR_NAME);
+  if (!(await fs.pathExists(trashRoot))) return;
+  const entries = await fs.readdir(trashRoot);
+  const now = Date.now();
+  for (const entry of entries) {
+    const entryPath = path.join(trashRoot, entry);
+    const stats = await fs.stat(entryPath).catch(() => null);
+    if (!stats || !stats.isDirectory()) continue;
+    const timestamp = Number(entry);
+    if (Number.isNaN(timestamp)) continue;
+    if (now - timestamp < TRASH_RETENTION_MS) continue;
+    try {
+      await fs.remove(entryPath);
+      logger.info('trash bucket cleaned', { share: share.name, bucket: entry });
+      broadcastTrashCleanup(share, entry);
+    } catch (err) {
+      logger.warn('failed to remove trash bucket', { share: share.name, bucket: entry, err: err.message });
+    }
+  }
+}
+
+function startTrashCleaner() {
+  cleanupAllTrash().catch((err) => logger.error('initial trash cleanup failed', err.message));
+  setInterval(() => {
+    cleanupAllTrash().catch((err) => logger.error('scheduled trash cleanup failed', err.message));
+  }, TRASH_CLEANUP_INTERVAL_MS);
+}
+
+async function cleanupAllTrash() {
+  for (const share of shares) {
+    await cleanupTrash(share);
   }
 }
 
@@ -305,6 +358,7 @@ wss.on('connection', (ws) => {
 });
 
 registerWatchers();
+startTrashCleaner();
 
 process.on('uncaughtException', (err) => logger.error('uncaught exception', err.stack || err.message));
 process.on('unhandledRejection', (reason) => logger.error('unhandled rejection', reason));
