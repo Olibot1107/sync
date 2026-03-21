@@ -34,6 +34,7 @@ Default arguments are pulled from `client/settings.js` and can be overridden wit
 |------|---------|-------------|
 | `--log-level` | `LOG_LEVEL` | Client-specific verbosity (`debug`, `info`, `warn`, `error`). Defaults to `info`. |
 | `--choose-local` | | Prompt for the local folder path interactively before syncing. |
+|  | `SYNC_SNAPSHOT_PROGRESS_THRESHOLD` | Minimum snapshot file count to emit per-folder progress (default `200`). |
 |  | `SYNC_PASSWORD` | Password presented to the server during initialization. |
 
 Set `SYNC_SERVER_URL`, `SYNC_SHARE`, or `SYNC_LOCAL_DIR` in your environment to temporarily override the values stored in `client/config.json`.
@@ -50,15 +51,15 @@ Both `server/config.json` and `client/config.json` are now auto-generated with s
 
 You can put a `client/config.json` next to `client/index.js` (see the sample file) to persist sensible defaults there; the client will automatically merge that JSON with any flags or environment variables you pass.
 
-A newly connected client requests a full snapshot (`share-list` + `snapshot`), clears the local mirror, copies everything over, and then starts its own watcher. After that, it streams every local change to the server, and the server replays those edits back into the share so every peer receives the update.
+A newly connected client requests a full snapshot (`share-list` + `snapshot`), clears the local mirror, copies everything over, and then starts its own watcher. When a snapshot has at least 200 files (configurable with `SYNC_SNAPSHOT_PROGRESS_THRESHOLD`), the client logs folder-level progress (e.g., `folderX 35%`) so you can see how far the large download has progressed. After the snapshot, it streams every local change to the server, and the server replays those edits back into the share so every peer receives the update.
 
 ## Logging & error handling
 - Timestamps and log levels are colorized using ANSI escape codes so you can scan the console quickly. File/edit activity messages are logged at `info` level (`share filesystem change`, `local filesystem change detected`, `remote change applied locally`, etc.), and `debug` adds more detail for suppressed events or republished changes.
 - Both the server and client register `uncaughtException` / `unhandledRejection` handlers, along with `watcher`/`WebSocket` error listeners, so fatal problems are logged before the process exits.
 
 ## Ignored paths
-- Shares ignore `.git` trees by default to avoid permission errors and extra noise. Add an `ignoredPaths` array to a share definition (or override it with `[]`) to customize the folders that should never be synced.
-- Clients honor the same `ignoredPaths` list when watching the local mirror and when applying snapshots, so your ignored directories stay untouched even when the mirror is rebuilt.
+- Shares ignore `.git` trees and `.DS_Store` files by default to avoid permission errors and platform noise. Add an `ignoredPaths` array to a share definition (or override it with `[]`) to customize the files or folders that should never be synced.
+- Clients honor the same `ignoredPaths` list when watching the local mirror and when applying snapshots, so your ignored directories/files stay untouched even when the mirror is rebuilt.
 
 ## Extending shares
 Add another entry to `server/config.json` like:

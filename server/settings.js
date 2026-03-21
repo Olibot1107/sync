@@ -80,7 +80,7 @@ function normalizeShare(share) {
   const resolved = path.isAbsolute(rawPath) ? rawPath : path.resolve(__dirname, rawPath);
   const userIgnored = share.hasOwnProperty('ignoredPaths') ? share.ignoredPaths : share.ignore;
   const normalizedIgnored = tidyIgnorePaths(userIgnored);
-  const ignoredPaths = userIgnored ? normalizedIgnored : normalizedIgnored.length ? normalizedIgnored : ['.git'];
+  const ignoredPaths = userIgnored ? normalizedIgnored : normalizedIgnored.length ? normalizedIgnored : ['.git', '.DS_Store'];
   return {
     name: share.name,
     path: resolved,

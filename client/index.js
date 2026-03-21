@@ -23,6 +23,7 @@ const serverUrl = process.env.SYNC_SERVER_URL || settings.server;
 const shareName = process.env.SYNC_SHARE || settings.share;
 const envLocal = process.env.SYNC_LOCAL_DIR;
 const clientPassword = process.env.SYNC_PASSWORD || settings.password || '';
+const SNAPSHOT_PROGRESS_THRESHOLD = Number(process.env.SYNC_SNAPSHOT_PROGRESS_THRESHOLD || 200);
 
 function expandTilde(value) {
   if (!value) return value;
@@ -211,11 +212,29 @@ async function applySnapshot(snapshot) {
   for (const dir of snapshot.directories || []) {
     await fs.ensureDir(path.join(localDir, dir));
   }
-  for (const file of remoteFiles) {
+  const totalFiles = remoteFiles.length;
+  let lastPercent = -1;
+  let lastFolder = '';
+  for (let idx = 0; idx < remoteFiles.length; idx += 1) {
+    const file = remoteFiles[idx];
     const target = path.join(localDir, file.path);
     await fs.ensureDir(path.dirname(target));
     await fs.writeFile(target, file.buffer);
     suppressEvent(file.path);
+    if (totalFiles >= SNAPSHOT_PROGRESS_THRESHOLD) {
+      const percent = Math.floor(((idx + 1) / totalFiles) * 100);
+      const folder = file.path.split('/')[0] || '.';
+      if (percent !== lastPercent || folder !== lastFolder) {
+        logger.info('snapshot progress', {
+          share: shareName,
+          folder,
+          percent,
+          path: file.path
+        });
+        lastPercent = percent;
+        lastFolder = folder;
+      }
+    }
   }
   logger.info('snapshot applied', { files: (snapshot.files || []).length, dirs: (snapshot.directories || []).length });
   startLocalWatcher();

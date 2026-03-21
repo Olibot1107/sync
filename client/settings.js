@@ -37,7 +37,7 @@ const resolved = {
   share: fileConfig.share || 'projects',
   local: fileConfig.local || './client-sync',
   sharePaths: fileConfig.sharePaths || {},
-  ignoredPaths: fileConfig.ignoredPaths || ['.git'],
+  ignoredPaths: fileConfig.ignoredPaths || ['.git', '.DS_Store'],
   password: fileConfig.password || '',
   logLevel: (fileConfig.logLevel || 'info').toLowerCase(),
   reconnectDelayMs: Number(fileConfig.reconnectDelayMs || 5000)
