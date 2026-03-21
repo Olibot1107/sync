@@ -12,7 +12,6 @@ const port = settings.port;
 const shares = settings.shares;
 const snapshotCompressionEnabled = Boolean(settings.snapshotCompression);
 const snapshotConcurrencyLimit = Math.min(Math.max(settings.snapshotConcurrency || 4, 1), 32);
-const snapshotCompressionEnabled = settings.snapshotCompression;
 
 const suppressedEvents = new Map();
 
