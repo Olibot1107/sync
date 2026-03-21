@@ -215,8 +215,6 @@ async function handleSnapshotMetadata(snapshot) {
   await fs.ensureDir(localDir);
   const directories = (snapshot.directories || []).filter(Boolean);
   const filesMeta = snapshot.files || [];
-  const remoteMetaMap = new Map(filesMeta.map((file) => [file.path, file]));
-  await preserveLocalConflicts(remoteMetaMap);
   await clearLocalMirror();
   for (const dir of directories) {
     await fs.ensureDir(path.join(localDir, dir));
@@ -305,56 +303,6 @@ async function maybeFinalizeSnapshot() {
   logger.info('snapshot applied', { files: context.processedFiles, dirs: context.dirCount });
   snapshotContext = null;
   startLocalWatcher();
-}
-
-async function collectLocalFiles() {
-  const entries = [];
-  async function walk(current) {
-    const items = await fs.readdir(current);
-    for (const item of items) {
-      const absolute = path.join(current, item);
-      const rel = normalizeRelPath(path.relative(localDir, absolute));
-      if (shouldSkipLocalRel(rel)) continue;
-      const stats = await fs.stat(absolute);
-      if (stats.isDirectory()) {
-        await walk(absolute);
-      } else if (stats.isFile()) {
-        entries.push({ absolute, rel, stats });
-      }
-    }
-  }
-  await walk(localDir);
-  return entries;
-}
-
-async function preserveLocalConflicts(remoteMetaMap) {
-  const localFiles = await collectLocalFiles();
-  if (!localFiles.length) return;
-  const conflicts = [];
-  for (const file of localFiles) {
-    const remoteMeta = remoteMetaMap?.get(file.rel);
-    if (!remoteMeta) {
-      conflicts.push(file);
-      continue;
-    }
-    const sizeMatches = file.stats.size === remoteMeta.size;
-    const timeMatches = Math.abs(file.stats.mtimeMs - (remoteMeta.mtimeMs || 0)) < 1000;
-    if (!sizeMatches || !timeMatches) {
-      conflicts.push(file);
-    }
-  }
-  if (!conflicts.length) return;
-  const conflictRoot = path.join(localDir, '.conflicts', `${Date.now()}`);
-  await fs.ensureDir(conflictRoot);
-  for (const file of conflicts) {
-    const target = path.join(conflictRoot, file.rel);
-    await fs.ensureDir(path.dirname(target));
-    await fs.move(file.absolute, target, { overwrite: true });
-  }
-  logger.warn('local changes preserved in conflicts folder', {
-    count: conflicts.length,
-    location: path.relative(localDir, conflictRoot)
-  });
 }
 
 async function clearLocalMirror() {
