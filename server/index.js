@@ -9,7 +9,7 @@ const createLogger = require('../lib/logger');
 const logger = createLogger('sync-server', { level: settings.logLevel });
 const port = settings.port;
 const shares = settings.shares;
-const TRASH_DIR_NAME = '.trash';
+const TRASH_DIR_NAME = 'trash-bin';
 
 const suppressedEvents = new Map();
 
