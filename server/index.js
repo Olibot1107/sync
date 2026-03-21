@@ -2,6 +2,7 @@ const WebSocket = require('ws');
 const chokidar = require('chokidar');
 const fs = require('fs-extra');
 const path = require('path');
+const zlib = require('zlib');
 
 const settings = require('./settings');
 const createLogger = require('../lib/logger');
@@ -9,6 +10,7 @@ const createLogger = require('../lib/logger');
 const logger = createLogger('sync-server', { level: settings.logLevel });
 const port = settings.port;
 const shares = settings.shares;
+const snapshotCompressionEnabled = settings.snapshotCompression;
 
 const suppressedEvents = new Map();
 
@@ -113,13 +115,27 @@ async function streamSnapshotFiles(ws, share, files) {
       logger.warn('snapshot file skipped (read)', { path: fileMeta.path, err: err.message });
       continue;
     }
+    let payloadBuffer = content;
+    let compressed = false;
+    if (snapshotCompressionEnabled) {
+      try {
+        payloadBuffer = zlib.deflateSync(content);
+        compressed = true;
+      } catch (err) {
+        logger.warn('snapshot file compression failed', { path: fileMeta.path, err: err.message });
+        payloadBuffer = content;
+        compressed = false;
+      }
+    }
     const payload = {
       type: 'snapshot-file',
       share: share.name,
       file: {
         path: fileMeta.path,
         encoding: 'base64',
-        content: content.toString('base64')
+        content: payloadBuffer.toString('base64'),
+        compressed,
+        compression: compressed ? 'deflate' : undefined
       },
       index: sent + 1,
       total: files.length

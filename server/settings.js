@@ -18,6 +18,7 @@ function ensureConfigFile() {
         path: './shared/projects'
       }
     ],
+    snapshotCompression: true,
     password: 'changeme'
   };
   fs.writeFileSync(configPath, JSON.stringify(template, null, 2));
@@ -100,8 +101,9 @@ function loadSettings() {
   const port = Number(process.env.PORT || process.env.SYNC_PORT || config.port) || 3001;
   const logLevel = (process.env.LOG_LEVEL || config.logLevel || 'info').toLowerCase();
   const password = process.env.SYNC_PASSWORD || config.password || 'changeme';
+  const snapshotCompression = config.hasOwnProperty('snapshotCompression') ? Boolean(config.snapshotCompression) : true;
 
-  return { port, logLevel, shares, password };
+  return { port, logLevel, shares, password, snapshotCompression };
 }
 
 module.exports = loadSettings();

@@ -5,6 +5,7 @@ const path = require('path');
 const os = require('os');
 const readline = require('readline');
 const yargs = require('yargs/yargs');
+const zlib = require('zlib');
 
 const settings = require('./settings');
 const createLogger = require('../lib/logger');
@@ -250,7 +251,16 @@ async function handleSnapshotFileMessage(msg) {
   const target = path.join(localDir, file.path);
   try {
     await fs.ensureDir(path.dirname(target));
-    await fs.writeFile(target, Buffer.from(file.content || '', file.encoding || 'base64'));
+    let buffer = Buffer.from(file.content || '', file.encoding || 'base64');
+    if (file.compressed) {
+      try {
+        buffer = zlib.inflateSync(buffer);
+      } catch (err) {
+        logger.warn('failed to decompress snapshot file', { path: file.path, err: err.message });
+        buffer = Buffer.from(file.content || '', file.encoding || 'base64');
+      }
+    }
+    await fs.writeFile(target, buffer);
   } catch (err) {
     logger.warn('failed to write snapshot file', err.message);
     return;
