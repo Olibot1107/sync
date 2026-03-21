@@ -74,34 +74,44 @@ function sendToShareClients(msg, { exclude } = {}) {
 async function collectSnapshotMetadata(share) {
   const directories = [];
   const files = [];
+  const stack = [share.path];
 
-  async function walk(current) {
-    const entries = await fs.readdir(current);
-    for (const entry of entries) {
-      const absolute = path.join(current, entry);
-      const rel = normalizeRelPath(path.relative(share.path, absolute));
-      if (shouldIgnoreShareRel(share, rel)) continue;
-      let stats;
-      try {
-        stats = await fs.stat(absolute);
-      } catch (err) {
-        logger.warn('snapshot entry skipped (stat)', { path: rel, err: err.message });
-        continue;
-      }
-      if (stats.isDirectory()) {
-        directories.push(rel);
-        await walk(absolute);
-      } else if (stats.isFile()) {
-        files.push({
-          path: rel,
-          size: stats.size,
-          mtimeMs: stats.mtimeMs
-        });
-      }
+  while (stack.length) {
+    const current = stack.pop();
+    let entries;
+    try {
+      entries = await fs.readdir(current);
+    } catch (err) {
+      const rel = normalizeRelPath(path.relative(share.path, current));
+      logger.warn('snapshot entry skipped (readdir)', { path: rel, err: err.message });
+      continue;
     }
+    await Promise.all(
+      entries.map(async (entry) => {
+        const absolute = path.join(current, entry);
+        const rel = normalizeRelPath(path.relative(share.path, absolute));
+        if (shouldIgnoreShareRel(share, rel)) return;
+        let stats;
+        try {
+          stats = await fs.stat(absolute);
+        } catch (err) {
+          logger.warn('snapshot entry skipped (stat)', { path: rel, err: err.message });
+          return;
+        }
+        if (stats.isDirectory()) {
+          directories.push(rel);
+          stack.push(absolute);
+        } else if (stats.isFile()) {
+          files.push({
+            path: rel,
+            size: stats.size,
+            mtimeMs: stats.mtimeMs
+          });
+        }
+      })
+    );
   }
 
-  await walk(share.path);
   return { directories, files };
 }
 
