@@ -51,6 +51,7 @@ async function moveToTrash(share, relPath) {
   await fs.ensureDir(path.dirname(destination));
   try {
     await fs.move(source, destination, { overwrite: true });
+    await broadcastTrashEvent(share, relPath, destination);
     return destination;
   } catch (err) {
     if (err.code === 'ENOENT' || err.code === 'EACCES') {
@@ -62,6 +63,42 @@ async function moveToTrash(share, relPath) {
       return null;
     }
     throw err;
+  }
+}
+
+async function broadcastTrashEvent(share, originalRelPath, destination) {
+  const trashRel = normalizeRelPath(path.relative(share.path, destination));
+  let kind = 'unknown';
+  let content;
+  try {
+    const stats = await fs.stat(destination);
+    if (stats.isFile()) {
+      kind = 'file';
+      const data = await fs.readFile(destination);
+      content = data.toString('base64');
+    } else if (stats.isDirectory()) {
+      kind = 'directory';
+    }
+  } catch (err) {
+    logger.warn('failed to stat/mirrors trash entry', { path: trashRel, err: err.message });
+  }
+
+  const payload = {
+    type: 'trash-bin',
+    share: share.name,
+    originalPath: originalRelPath,
+    trashPath: trashRel,
+    kind,
+    encoding: content ? 'base64' : undefined,
+    content,
+    timestamp: Date.now()
+  };
+
+  const serialized = JSON.stringify(payload);
+  for (const client of wss.clients) {
+    if (client.readyState !== WebSocket.OPEN) continue;
+    if (client.shareName !== share.name) continue;
+    safeSend(client, serialized);
   }
 }
 
