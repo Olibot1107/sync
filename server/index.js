@@ -9,9 +9,6 @@ const createLogger = require('../lib/logger');
 const logger = createLogger('sync-server', { level: settings.logLevel });
 const port = settings.port;
 const shares = settings.shares;
-const TRASH_DIR_NAME = 'trash-bin';
-const TRASH_RETENTION_MS = 4 * 24 * 60 * 60 * 1000;
-const TRASH_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 
 const suppressedEvents = new Map();
 
@@ -32,127 +29,13 @@ function isIgnoredRelPath(rel, share) {
   return rules.some((pattern) => matchesIgnorePattern(rel, pattern));
 }
 
-function isTrashRelPath(rel) {
-  return rel === TRASH_DIR_NAME || rel.startsWith(`${TRASH_DIR_NAME}/`);
-}
-
 function shouldIgnoreShareRel(share, rel) {
-  return !!rel && (isTrashRelPath(rel) || isIgnoredRelPath(rel, share));
+  return !!rel && isIgnoredRelPath(rel, share);
 }
 
 function shouldIgnoreSharePath(share, absolutePath) {
   const rel = normalizeRelPath(path.relative(share.path, absolutePath));
   return shouldIgnoreShareRel(share, rel);
-}
-
-async function moveToTrash(share, relPath) {
-  const source = path.join(share.path, relPath);
-  if (!(await fs.pathExists(source))) return null;
-  const bucket = path.join(share.path, TRASH_DIR_NAME, Date.now().toString());
-  const destination = path.join(bucket, relPath);
-  await fs.ensureDir(path.dirname(destination));
-  try {
-    await fs.move(source, destination, { overwrite: true });
-    await broadcastTrashEvent(share, relPath, destination);
-    return destination;
-  } catch (err) {
-    if (err.code === 'ENOENT' || err.code === 'EACCES') {
-      logger.warn('trash move skipped (source disappeared or locked)', {
-        share: share.name,
-        path: relPath,
-        err: err.message
-      });
-      return null;
-    }
-    throw err;
-  }
-}
-
-async function broadcastTrashEvent(share, originalRelPath, destination) {
-  const trashRel = normalizeRelPath(path.relative(share.path, destination));
-  let kind = 'unknown';
-  let content;
-  try {
-    const stats = await fs.stat(destination);
-    if (stats.isFile()) {
-      kind = 'file';
-      const data = await fs.readFile(destination);
-      content = data.toString('base64');
-    } else if (stats.isDirectory()) {
-      kind = 'directory';
-    }
-  } catch (err) {
-    logger.warn('failed to stat/mirrors trash entry', { path: trashRel, err: err.message });
-  }
-
-  const payload = {
-    type: 'trash-bin',
-    share: share.name,
-    originalPath: originalRelPath,
-    trashPath: trashRel,
-    kind,
-    encoding: content ? 'base64' : undefined,
-    content,
-    timestamp: Date.now()
-  };
-
-  const serialized = JSON.stringify(payload);
-  for (const client of wss.clients) {
-    if (client.readyState !== WebSocket.OPEN) continue;
-    if (client.shareName !== share.name) continue;
-    safeSend(client, serialized);
-  }
-}
-
-function broadcastTrashCleanup(share, trashBucket) {
-  if (!trashBucket) return;
-  const payload = {
-    type: 'trash-cleanup',
-    share: share.name,
-    trashPath: normalizeRelPath(path.join(TRASH_DIR_NAME, trashBucket)),
-    timestamp: Date.now()
-  };
-  const serialized = JSON.stringify(payload);
-  for (const client of wss.clients) {
-    if (client.readyState !== WebSocket.OPEN) continue;
-    if (client.shareName !== share.name) continue;
-    safeSend(client, serialized);
-  }
-}
-
-async function cleanupTrash(share) {
-  const trashRoot = path.join(share.path, TRASH_DIR_NAME);
-  if (!(await fs.pathExists(trashRoot))) return;
-  const entries = await fs.readdir(trashRoot);
-  const now = Date.now();
-  for (const entry of entries) {
-    const entryPath = path.join(trashRoot, entry);
-    const stats = await fs.stat(entryPath).catch(() => null);
-    if (!stats || !stats.isDirectory()) continue;
-    const timestamp = Number(entry);
-    if (Number.isNaN(timestamp)) continue;
-    if (now - timestamp < TRASH_RETENTION_MS) continue;
-    try {
-      await fs.remove(entryPath);
-      logger.info('trash bucket cleaned', { share: share.name, bucket: entry });
-      broadcastTrashCleanup(share, entry);
-    } catch (err) {
-      logger.warn('failed to remove trash bucket', { share: share.name, bucket: entry, err: err.message });
-    }
-  }
-}
-
-function startTrashCleaner() {
-  cleanupAllTrash().catch((err) => logger.error('initial trash cleanup failed', err.message));
-  setInterval(() => {
-    cleanupAllTrash().catch((err) => logger.error('scheduled trash cleanup failed', err.message));
-  }, TRASH_CLEANUP_INTERVAL_MS);
-}
-
-async function cleanupAllTrash() {
-  for (const share of shares) {
-    await cleanupTrash(share);
-  }
 }
 
 function suppressEvent(shareName, relPath) {
@@ -331,16 +214,7 @@ wss.on('connection', (ws) => {
           const buffer = Buffer.from(payload.content || '', payload.encoding || 'base64');
           await fs.writeFile(targetPath, buffer);
         } else if (payload.action === 'delete') {
-          const moved = await moveToTrash(share, payload.path);
-          if (!moved) {
-            await fs.remove(targetPath);
-          } else {
-            logger.info('moved deleted file to trash', {
-              share: share.name,
-              path: payload.path,
-              trashPath: normalizeRelPath(path.relative(share.path, moved))
-            });
-          }
+          await fs.remove(targetPath);
         }
       } catch (err) {
         logger.error('failed to apply client change', err.message);
@@ -358,7 +232,6 @@ wss.on('connection', (ws) => {
 });
 
 registerWatchers();
-startTrashCleaner();
 
 process.on('uncaughtException', (err) => logger.error('uncaught exception', err.stack || err.message));
 process.on('unhandledRejection', (reason) => logger.error('unhandled rejection', reason));

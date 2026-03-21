@@ -316,50 +316,9 @@ async function handleMessage(data) {
     await applyRemoteChange(msg);
     return;
   }
-  if (msg.type === 'trash-bin') {
-    await handleTrashInfo(msg).catch((err) => logger.warn('failed to mirror trash entry', err.message));
-    return;
-  }
-  if (msg.type === 'trash-cleanup') {
-    await handleTrashCleanup(msg).catch((err) => logger.warn('failed to clean local trash entry', err.message));
-    return;
-  }
   if (msg.type === 'error') {
     logger.warn('server error', msg.message);
   }
-}
-
-async function handleTrashInfo(event) {
-  if (event.share !== shareName) return;
-  if (!event.trashPath) return;
-  const localTrashPath = path.join(localDir, event.trashPath);
-  if (event.kind === 'directory') {
-    await fs.ensureDir(localTrashPath);
-  } else if (event.kind === 'file' && event.content) {
-    await fs.ensureDir(path.dirname(localTrashPath));
-    await fs.writeFile(localTrashPath, Buffer.from(event.content, event.encoding || 'base64'));
-  }
-  const metaPath = `${localTrashPath}.meta.json`;
-  const brew = {
-    originalPath: event.originalPath,
-    trashPath: event.trashPath,
-    timestamp: event.timestamp,
-    kind: event.kind
-  };
-  await fs.ensureDir(path.dirname(metaPath));
-  await fs.writeFile(metaPath, JSON.stringify(brew, null, 2));
-  logger.info('mirrored trash entry locally', { path: event.trashPath, original: event.originalPath });
-}
-
-async function handleTrashCleanup(event) {
-  if (event.share !== shareName) return;
-  if (!event.trashPath) return;
-  const localTrashPath = path.join(localDir, event.trashPath);
-  if (!localTrashPath) return;
-  await fs.remove(localTrashPath).catch(() => {});
-  const metaPath = `${localTrashPath}.meta.json`;
-  await fs.remove(metaPath).catch(() => {});
-  logger.info('local trash bucket cleaned', { path: event.trashPath });
 }
 
 async function startClient() {
