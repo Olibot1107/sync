@@ -49,8 +49,20 @@ async function moveToTrash(share, relPath) {
   const bucket = path.join(share.path, TRASH_DIR_NAME, Date.now().toString());
   const destination = path.join(bucket, relPath);
   await fs.ensureDir(path.dirname(destination));
-  await fs.move(source, destination, { overwrite: true });
-  return destination;
+  try {
+    await fs.move(source, destination, { overwrite: true });
+    return destination;
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'EACCES') {
+      logger.warn('trash move skipped (source disappeared or locked)', {
+        share: share.name,
+        path: relPath,
+        err: err.message
+      });
+      return null;
+    }
+    throw err;
+  }
 }
 
 function suppressEvent(shareName, relPath) {

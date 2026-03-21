@@ -55,6 +55,7 @@ A newly connected client requests a full snapshot (`share-list` + `snapshot`), c
 ## Trash bin
 - When a client deletes a file, the server moves it into `.trash/<timestamp>/…` inside the share root before informing the other peers. The mirror still receives the delete event, but the data is preserved until someone inspects or clears the trash folder manually.
 - The share watcher ignores `.trash`, so the trash bin is never re-broadcast or mirrored back to clients automatically. Delete something again inside `.trash` (or remove `.trash/<timestamp>` entirely) if you want to permanently drop it.
+- Move-to-trash now skips files that disappear between the delete request and the rename (such as nested `.git` directories that already vanished or were inaccessible); those deletes still propagate to clients, but nothing is logged as a failure.
 
 ## Ignored paths
 - Shares ignore `.git` trees by default to avoid permission errors and extra noise. Add an `ignoredPaths` array to a share definition (or override it with `[]`) to customize the folders that should never be synced.
